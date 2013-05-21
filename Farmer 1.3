@@ -1,0 +1,576 @@
+package scripts;
+
+import java.awt.Color;
+import java.awt.Graphics;
+import java.awt.Point;
+import java.awt.Polygon;
+
+import org.tribot.api.General;
+import org.tribot.api.input.Keyboard;
+import org.tribot.api.input.Mouse;
+import org.tribot.api2007.Skills;
+import org.tribot.api.Timing;
+import org.tribot.api2007.Banking;
+import org.tribot.api2007.Camera;
+import org.tribot.api2007.ChooseOption;
+import org.tribot.api2007.Game;
+import org.tribot.api2007.GameTab;
+import org.tribot.api2007.GameTab.TABS;
+import org.tribot.api2007.Interfaces;
+import org.tribot.api2007.Inventory;
+import org.tribot.api2007.NPCs;
+import org.tribot.api2007.Player;
+import org.tribot.api2007.Screen;
+import org.tribot.api2007.Walking;
+import org.tribot.api2007.types.RSInterfaceChild;
+import org.tribot.api2007.types.RSItem;
+import org.tribot.api2007.types.RSNPC;
+import org.tribot.api2007.types.RSTile;
+import org.tribot.script.Script;
+import org.tribot.script.ScriptManifest;
+import org.tribot.script.interfaces.Painting;
+
+@ScriptManifest(authors = { "Eurater" }, category = "Thieving", name = "e-Master Farmer")
+
+public class MasterFarmer extends Script implements Painting{
+
+  private final RSTile DRAYNOR_BANK_TILE  = new RSTile(3093, 3243),
+						 MARKET_CENTER_TILE = new RSTile(3081, 3250);
+	
+	private final RSTile[] HOME_TO_DRAYNOR  = {new RSTile(3230, 3230),
+											   new RSTile(3217, 3239),
+											   new RSTile(3203, 3239),
+											   new RSTile(3191, 3236),
+											   new RSTile(3178, 3229),
+											   new RSTile(3165, 3227),
+											   new RSTile(3151, 3221),
+											   new RSTile(3137, 3219),
+											   new RSTile(3124, 3221),
+											   new RSTile(3111, 3228),
+											   new RSTile(3105, 3242),
+											   new RSTile(3093, 3243)};
+	
+	private final RSTile[] MARKET_TO_BANK = {  MARKET_CENTER_TILE,
+											   new RSTile(3090, 3248),
+											   DRAYNOR_BANK_TILE};
+	
+	private final RSTile[] BANK_TO_MARKET = {  new RSTile(3088, 3248),
+											   MARKET_CENTER_TILE};
+	
+	private final int DRAYNOR_BANKER_ID = 57,
+					  EVIL_CHICKEN_ID = 2465,
+					  EVIL_CHICKEN_ID2 = 2467,
+					  SWARM_ID = 407,
+					  MASTER_FARMER_ID = 2234,
+					  MARKET_GUARD_ID = 2236,
+					  STEAL_ID = 881;
+	
+	private final int[] COMBAT_IDS = {EVIL_CHICKEN_ID, EVIL_CHICKEN_ID2 ,SWARM_ID, MARKET_GUARD_ID};
+	
+	private final Polygon DRAYNOR_MARKET = createArea(new RSTile(3073, 3256), new RSTile(3091, 3244)),
+						  DRAYNOR_BANK   = createArea(new RSTile(3092, 3248), new RSTile(3097, 3240)),
+						  LUMBRIDGE_HOME = createArea(new RSTile(3218, 3226), new RSTile(3235, 3210));
+	
+	private Polygon npc = null;
+	
+	private int FOOD_ID = 0,
+				WITHDRAW_FOOD_AMOUNT = 0;
+	
+	private boolean isStunned = false;
+	
+	private enum State {PICKPOCKET, WAIT_FOR_STUN, EAT_FOOD, GO_TO_BANK,
+						OPEN_BANK, DEPOSIT_ITEMS, WITHDRAW_FOOD, DEATHWALK,
+						WALK_TO_MARKET, WALK_TO_DRAYNOR, RUN_FROM_COMBAT, END};
+	
+	private final long START_TIME = System.currentTimeMillis();
+	
+	private final int START_XP   =  Skills.getXP("Thieving");
+	private int       CURRENT_XP =  START_XP,
+				      xpGained   =  0;
+	private long      runningTime=  0;
+	
+	private State SCRIPT_STATE = getState();
+	
+	private State getState(){
+		if(isInArea(DRAYNOR_MARKET)){
+			if(!isInCombat()){
+				if(!isStunned){
+					if(!Inventory.isFull()){
+						if(hasFood(FOOD_ID)){
+							if(hasEnoughHealth()){
+								return State.PICKPOCKET;
+							} else {
+								return State.EAT_FOOD;
+							}
+						} else {
+							return State.GO_TO_BANK;
+						}
+					} else {
+						return State.GO_TO_BANK;
+					}
+				} else {
+					return State.WAIT_FOR_STUN;
+				}
+			} else {
+				return State.RUN_FROM_COMBAT;
+			}
+		} else if (isInArea(DRAYNOR_BANK)){
+			if(!Banking.isBankScreenOpen()){
+				if(Inventory.isFull() || !(Inventory.getCount(FOOD_ID) > 0) || hasJunk()){
+					return State.OPEN_BANK;
+				} else {
+					return State.WALK_TO_MARKET;
+				}
+			} else {
+				if(Inventory.isFull() || hasJunk()){
+					return State.DEPOSIT_ITEMS;
+				} else {
+					if(Inventory.getCount(FOOD_ID) < WITHDRAW_FOOD_AMOUNT){
+						if(bankHasFood()){
+							return State.WITHDRAW_FOOD;
+						} else {
+							return State.END;
+						}
+					} else {
+						return State.WALK_TO_MARKET;
+					}
+				}
+			}
+		} else if (isInArea(LUMBRIDGE_HOME)){
+			return State.WALK_TO_DRAYNOR;
+		} else {
+			return State.DEATHWALK;
+		}
+	}
+	
+	@Override
+	public void onPaint(Graphics g) {
+		// TODO Auto-generated method stub
+		runningTime = System.currentTimeMillis()-START_TIME;
+		double MULTIPLIER = runningTime / 3600000D;
+		
+		CURRENT_XP = Skills.getXP("Thieving");
+		xpGained = CURRENT_XP-START_XP;
+		int xpPerHour = (int)(xpGained / MULTIPLIER);
+		
+		g.setColor(Color.BLACK);
+		g.drawString("Master Farmer Thiever by Eurater", 10, 100);
+		g.drawString("Time running: " + Timing.msToString(runningTime), 10, 115);
+		g.drawString("XP Gained: " + xpGained, 10, 130);
+		g.drawString("Xp per hour: " + xpPerHour, 10, 145);
+		g.drawString("State: " + SCRIPT_STATE, 10, 175);
+	}
+
+	@Override
+	public void run() {
+		// TODO Auto-generated method stub
+		
+		if(getFoodDetails()){
+			while(SCRIPT_STATE != State.END){
+				SCRIPT_STATE = getState();
+
+				switch(SCRIPT_STATE){
+				case DEPOSIT_ITEMS:
+					deposit();
+					break;
+				case EAT_FOOD:
+					eatFood();
+					break;
+				case GO_TO_BANK:
+					walkToBank();
+					break;
+				case OPEN_BANK:
+					openBank();
+					break;
+				case PICKPOCKET:
+					pickpocketFarmer();
+					break;
+				case WALK_TO_DRAYNOR:
+					deathwalk();
+					break;
+				case WALK_TO_MARKET:
+					walkToMarket();
+					break;
+				case WITHDRAW_FOOD:
+					withdrawItem(FOOD_ID, WITHDRAW_FOOD_AMOUNT);
+					break;
+				case RUN_FROM_COMBAT:
+					runFromCombat();
+					break;
+				case WAIT_FOR_STUN:
+					waitForStun();
+					break;
+				case DEATHWALK:
+					castHomeTeleport();
+					break;
+				default:
+					break;
+				}
+				
+					sleep(50,100);
+
+			}
+			println("Finished running Master Thiever!");
+			println("Gained " + xpGained + " experience in " + Timing.msToString(runningTime));
+		}
+
+		//sleep(9000);
+	}
+	
+	//Walking methods
+	///////////////////////////////////////////////////////////////////////////////
+	private boolean walkToBank(){
+		Walking.walkPath(MARKET_TO_BANK);
+		return true;
+	}
+	
+	private boolean walkToMarket(){
+		Walking.walkPath(BANK_TO_MARKET);
+		return true;
+	}
+	
+	private boolean deathwalk(){
+		Walking.walkPath(HOME_TO_DRAYNOR);
+		return true;
+	}
+	
+	//Deathwalk methods
+	////////////////////////////////////////////////////////////////////////////////
+	private boolean castHomeTeleport(){
+		if(Player.getAnimation() == -1 && !Player.isMoving()){
+			if(!(GameTab.getOpen() == TABS.MAGIC)){
+				GameTab.open(TABS.MAGIC);
+				waitForMagicTab();
+			}
+
+			Mouse.clickBox(566, 224, 574, 240, 1);
+			waitForTeleport();
+		}
+		return true;
+	}
+	
+	private boolean waitForMagicTab(){
+		while(!(GameTab.getOpen() == TABS.MAGIC)){
+			if(GameTab.getOpen() == TABS.MAGIC){
+				return true;
+			}
+			sleep(50,80);
+		}
+		return true;
+	}
+	
+	private boolean waitForTeleport(){
+		while(!(Player.getAnimation() == -1)){
+			if(Player.getAnimation() == -1){
+				return true;
+			}
+			sleep(50,80);
+		}
+		return true;
+	}
+	
+	//Combat methods
+	///////////////////////////////////////////////////////////////////////////////
+	private boolean isInCombat(){
+		RSNPC[] randoms = NPCs.find(COMBAT_IDS);
+		if(randoms != null && randoms.length > 0){
+			for(RSNPC npc : randoms){
+				if(npc.isInCombat() && npc.isInteractingWithMe()){
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+	
+	private boolean runFromCombat(){
+		RSTile myPos = Player.getPosition();
+		RSTile runTile = new RSTile(myPos.getX() - 10, myPos.getY());
+		
+		Walking.walkTo(runTile);
+		sleep(6000,8000);
+		Walking.walkTo(myPos);
+		waitUntilIdle();
+		return true;
+	}
+	
+	//Banking methods
+	///////////////////////////////////////////////////////////////////////////////
+	private boolean openBank(){
+		if(!Banking.isBankScreenOpen()){
+			RSNPC[] banker = NPCs.findNearest(DRAYNOR_BANKER_ID);
+			if(banker != null && banker.length > 0){
+				if(!Banking.isBankScreenOpen()){
+					clickNPC(banker[0], "Bank Banker");
+					sleep(1000,1500);
+					isBankScrolled();
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+	
+	private boolean isBankScrolled(){
+		Color bankScrollBar = Screen.getColorAt(475, 82);
+		if(!(bankScrollBar.getRGB() == -11713997)){
+			Mouse.clickBox(473, 78, 479, 86, 1);
+		}
+		return true;
+	}
+	
+	private boolean hasJunk(){
+		RSItem[] inventory = Inventory.getAll();
+		if(inventory != null && inventory.length > 0){
+			for(RSItem item : inventory){
+				if(item.getID() != FOOD_ID){
+					return true;
+				}
+				
+			}
+		}
+		return false;
+	}
+	
+    private boolean deposit(){
+    	String excludeIDs = "0";
+    	
+    	while(Inventory.getAll().length > 0){
+    		if(Banking.isBankScreenOpen()){
+    			RSItem[] inventory = Inventory.getAll();
+    			if(inventory != null & inventory.length > 0){
+    				for(RSItem item : inventory){
+    					if(!(excludeIDs.contains(Integer.toString(item.getID())))){
+    						if(item.getStack() <= 3 && Inventory.find(item.getID()).length <= 1){
+    							for(int x = 0; x < item.getStack(); x ++){
+    								item.click("Store 1");
+    								sleep(10,20);
+    							}
+    						} else {
+    							item.click("Store All");
+    						}
+    					}
+    					excludeIDs += Integer.toString(item.getID()) + ",";
+    				}
+    				
+    				
+    				sleep(10,20);
+    			}
+    		}
+    	}
+    	
+    	return true;
+    }
+	
+	private boolean bankHasFood(){
+		if(Banking.isBankScreenOpen()){
+			RSItem[] bankItems = Banking.find(FOOD_ID);
+			if(bankItems != null && bankItems.length > 0){
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	private boolean withdrawItem(int itemID, int amount){
+        if(Banking.isBankScreenOpen()){
+            RSItem[] item = Banking.find(itemID);
+            if(item != null){
+                if(amount == 10 || amount == 5 || amount == 1 || Integer.toString(amount) == "All"){
+                    item[0].click("Withdraw " + amount);
+                    sleep(800,1000);                    
+                } else {
+                    item[0].click("Withdraw X");
+                    sleep(800,1000);
+                    RSInterfaceChild WithdrawInterface = Interfaces.get(548, 93);
+                    if(WithdrawInterface != null) {
+                        Keyboard.typeSend(Integer.toString(amount));
+                    }
+                }
+                sleep(500,800);
+                return true;
+            }
+        }
+        return false;
+    }
+	
+	//Eating methods
+	///////////////////////////////////////////////////////////////////////////////
+	private boolean hasEnoughHealth(){
+		double currentHP = Skills.getCurrentLevel("Hitpoints"),
+			   maxHP     = Skills.getActualLevel("Hitpoints"),
+		       hpPercent = (int)((currentHP / maxHP) * 100);
+		
+		return(hpPercent > 30);
+	}
+	
+	private boolean hasFood(int foodID){
+		return(Inventory.getCount(FOOD_ID) > 0);
+	}
+	
+	private boolean eatFood(){
+		RSItem[] food = Inventory.find(FOOD_ID);
+		if(food != null && food.length > 0){
+			for(RSItem eat : food){
+				if(eat.getID() == FOOD_ID){
+					food[0].click("Eat");
+					sleep(150,200);
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+	/////////////////////////////////////////////////////////////////////////////////
+	private boolean pickpocketFarmer(){
+
+		while(!isInCombat() && !isStunned){
+			if(Player.getAnimation() == 397){
+				isStunned = true;
+			}
+			
+			if(isInCombat() || isStunned){
+				return false;
+			}
+			
+			RSNPC[] farmer = NPCs.find(MASTER_FARMER_ID);
+			if(farmer != null && farmer.length > 0){
+				if(!farmer[0].isOnScreen()){
+					Walking.walkTo(farmer[0].getPosition());
+				} 
+
+				if(clickNPC(farmer[0], "Pickpocket " + farmer[0].getName())){
+					if(!wasSuccessful()){
+						return false;
+					}
+				}
+			}
+			sleep(100, 250);
+		}
+		return false;
+	}
+	
+	private boolean wasSuccessful(){
+		if(Player.getAnimation() == STEAL_ID){
+			return true;
+		}
+		return false;
+	}
+	
+	private void waitForStun(){
+		sleep(3200,3500);
+		isStunned = false;
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////
+	private boolean getFoodDetails(){
+		RSItem[] inventory = Inventory.getAll();
+		if(inventory != null && inventory.length > 0){
+			FOOD_ID = inventory[0].getID();
+			WITHDRAW_FOOD_AMOUNT = Inventory.getCount(FOOD_ID);
+			
+			println("Food ID: " + FOOD_ID + " Food Number: " + WITHDRAW_FOOD_AMOUNT);
+			return true;
+		} else {
+			println("MUST START WITH FOOD IN INVENTORY!!");
+			return false;
+		}
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////
+	private boolean clickNPC(RSNPC npcToClick, String option){
+		
+		String npcName = npcToClick.getName();
+		String uptext = Game.getUptext();
+
+		int mouseX = 0,
+			mouseY = 0;
+		
+		while(true){
+			
+			RSTile myPos = Player.getPosition(),
+				   faPos = npcToClick.getPosition();
+			
+			if(myPos.distanceTo(faPos) > 5 && !npcToClick.isOnScreen()){
+				Walking.walkTo(faPos);
+				waitUntilIdle();
+				Camera.turnToTile(faPos);
+			}
+			uptext = Game.getUptext();
+			
+			npc = npcToClick.getModel().getEnclosedArea();
+			mouseX = (int)(npc.getBounds2D().getX() + (npc.getBounds2D().getHeight() / 2));
+			mouseY = (int)(npc.getBounds2D().getY() + (npc.getBounds2D().getWidth() / 2));
+			
+			if(ChooseOption.isOpen()){
+				Mouse.move((int)(Mouse.getPos().getX() - 10), (int)(Mouse.getPos().getY() - 10));
+			}
+			
+			if((!uptext.contains(npcName) && !(uptext.contains(option))) || (uptext.contains(npcName) && !(uptext.contains(option)))){
+				Mouse.hop(new Point(mouseX, mouseY));
+				Mouse.click(mouseX, mouseY, 3);
+				Timing.waitMenuOpen(General.random(80,150));
+				if(ChooseOption.isOpen()){
+					if(ChooseOption.isOptionValid(option)){
+						if(ChooseOption.select(option)){
+							return true;
+						}
+					}
+					ChooseOption.close();
+				}
+			} else {
+				Mouse.click(mouseX, mouseY, 1);
+				return true;
+			}
+
+			sleep(50);
+		}
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////
+	private Polygon createArea(RSTile northWest, RSTile southEast){
+		Polygon polygonArea = new Polygon();
+		
+		int xBound = Math.abs(southEast.getX() - northWest.getX()),
+			yBound = Math.abs(southEast.getY() - northWest.getY());
+		
+		for(int x = 0; x <= xBound; x++){
+			for(int y = 0; y <= yBound; y++){
+				int newX = northWest.getX() + x;
+				
+				polygonArea.addPoint(newX, (int)(northWest.getY() - y));
+			}
+		}
+		
+		return polygonArea;
+	}
+	
+	private boolean isInArea(Polygon area){
+		RSTile myPos = Player.getPosition();
+		int myX = myPos.getX(),
+			myY = myPos.getY();
+		
+		int[] x = area.xpoints,
+			  y = area.ypoints;
+		
+		for(int z = 0; z < x.length; z ++){
+			if(x[z] == myX && y[z] == myY){
+				return true;
+			}
+		}
+		
+		return false;
+	}
+	
+	private boolean waitUntilIdle(){
+		long t = System.currentTimeMillis();
+		
+		while(Timing.timeFromMark(t) < General.random(200,500)){
+			if(Player.isMoving() || Player.getAnimation() != -1){
+				t = System.currentTimeMillis();
+			}
+			sleep(60,100);
+		}
+		return false;
+	}
+}
